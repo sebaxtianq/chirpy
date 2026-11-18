@@ -108,6 +108,119 @@ func (c *apiConfig) create_user(w http.ResponseWriter, r *http.Request) {
 	w.Write(res)
 }
 
+func (c *apiConfig) update_user(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	type return_vals struct {
+		Id         uuid.UUID `json:"id"`
+		Created_at time.Time `json:"created_at"`
+		Updated_at time.Time `json:"updated_at"`
+		Email      string    `json:"email"`
+	}
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	token_secret := os.Getenv("JWT_TOKEN")
+	user, err := auth.ValidateJWT(token, token_secret)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	params := parameters{}
+	err = json.NewDecoder(r.Body).Decode(&params)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	hashed_pass, err := auth.HashPassword(params.Password)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	u, err := c.db.UpdateUser(r.Context(), database.UpdateUserParams{params.Email, hashed_pass, user})
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	resp_body := return_vals{
+		Id:         u.ID,
+		Created_at: u.CreatedAt,
+		Updated_at: u.UpdatedAt,
+		Email:      u.Email,
+	}
+	dat, err := json.Marshal(resp_body)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write(dat)
+}
+func (c *apiConfig) revoke_token(w http.ResponseWriter, r *http.Request) {
+	refresh_token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	user, err := c.db.GetUserFromRefreshToken(r.Context(), refresh_token)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	err = c.db.RevokeRefreshToken(r.Context(), user.UserID)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+func (c *apiConfig) refresh_token(w http.ResponseWriter, r *http.Request) {
+	type return_vals struct {
+		Token string `json:"token"`
+	}
+	refresh_token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	user, err := c.db.GetUserFromRefreshToken(r.Context(), refresh_token)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	if user.ExpiresAt.Before(time.Now()) {
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Printf("Refresh token is expired")
+		return
+	}
+	if user.RevokedAt.Time.Before(time.Now()) && user.RevokedAt.Valid {
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Println("Refresh token revoked")
+		return
+	}
+	jwt_key := os.Getenv("JWT_TOKEN")
+	token, err := auth.MakeJWT(user.UserID, jwt_key, time.Hour)
+	if err != nil {
+		fmt.Println("Error creating access token")
+	}
+	resp_body := return_vals{
+		Token: token,
+	}
+	dat, err := json.Marshal(resp_body)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write(dat)
+
+}
 func (c *apiConfig) login(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
 		Email    string `json:"email"`
@@ -332,6 +445,9 @@ func main() {
 	mux.HandleFunc("GET /api/chirps/{ChirpID}", cfg.get_chirp)
 	mux.HandleFunc("POST /api/users", cfg.create_user)
 	mux.HandleFunc("POST /api/login", cfg.login)
+	mux.HandleFunc("POST /api/refresh", cfg.refresh_token)
+	mux.HandleFunc("POST /api/revoke", cfg.revoke_token)
+	mux.HandleFunc("PUT /api/users", cfg.update_user)
 	serv := &http.Server{
 		Addr:    ":8080",
 		Handler: mux,
