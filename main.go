@@ -355,6 +355,37 @@ func (c *apiConfig) get_chirp(w http.ResponseWriter, r *http.Request) {
 	w.Write(dat)
 }
 
+func (c *apiConfig) delete_chirp(w http.ResponseWriter, r *http.Request) {
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	token_secret := os.Getenv("JWT_TOKEN")
+	user_id, err := auth.ValidateJWT(token, token_secret)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	ChirpID := r.PathValue("ChirpID")
+	ChirpUUID, err := uuid.Parse(ChirpID)
+	if err != nil {
+		fmt.Printf("Error: Could not parse Chirp UUID : %s got error %v", ChirpID, err)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	chirp, err := c.db.ReadChirp(r.Context(), ChirpUUID)
+	if chirp.UserID != user_id {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+	_, err = c.db.DeleteChirp(r.Context(), chirp.ID)
+	if err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
 func (c *apiConfig) create_chirp(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
 		Body    string    `json:"body"`
@@ -443,6 +474,7 @@ func main() {
 	mux.HandleFunc("POST /api/chirps", cfg.create_chirp)
 	mux.HandleFunc("GET /api/chirps", cfg.get_chirps)
 	mux.HandleFunc("GET /api/chirps/{ChirpID}", cfg.get_chirp)
+	mux.HandleFunc("DELETE /api/chirps/{ChirpID}", cfg.delete_chirp)
 	mux.HandleFunc("POST /api/users", cfg.create_user)
 	mux.HandleFunc("POST /api/login", cfg.login)
 	mux.HandleFunc("POST /api/refresh", cfg.refresh_token)
